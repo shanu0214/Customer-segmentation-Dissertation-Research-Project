@@ -1,0 +1,109 @@
+import pandas as pd
+import numpy as np
+import umap
+import seaborn as sns
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.preprocessing import StandardScaler
+from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
+from sklearn.metrics import silhouette_score
+
+# Load Data
+file_path = r"C:\Users\sanid\Desktop\Customer_segmentation\online+retail+ii\Online Retail.xlsx"
+
+def load_and_clean_data(file_path):
+    df = pd.read_excel(file_path, sheet_name="Online Retail")
+    df = df.dropna(subset=["CustomerID"])
+    df = df[(df["Quantity"] > 0) & (df["UnitPrice"] > 0)]
+    df["MonetaryValue"] = df["Quantity"] * df["UnitPrice"]
+    df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
+    return df
+
+# Compute RFM Features
+def compute_rfm(df):
+    reference_date = df["InvoiceDate"].max()
+    rfm = df.groupby("CustomerID").agg(
+        Recency=("InvoiceDate", lambda x: (reference_date - x.max()).days),
+        Frequency=("InvoiceNo", "nunique"),
+        Monetary=("MonetaryValue", "sum")
+    ).reset_index()
+    return rfm
+
+# Normalize Data
+def normalize_rfm(rfm):
+    scaler = StandardScaler()
+    return pd.DataFrame(scaler.fit_transform(rfm[["Recency", "Frequency", "Monetary"]]), 
+                        columns=["Recency", "Frequency", "Monetary"])
+
+# Apply UMAP with optimized hyperparameters
+def apply_umap(rfm_scaled):
+    umap_model = umap.UMAP(n_components=5, n_neighbors=100, min_dist=0.01, metric='mahalanobis', random_state=42)
+    return pd.DataFrame(umap_model.fit_transform(rfm_scaled), columns=["UMAP1", "UMAP2", "UMAP3", "UMAP4", "UMAP5"])
+
+# Fine-tune GMM
+def tune_gmm(rfm_umap_df):
+    best_gmm_score = -1
+    best_n_components = None
+    best_covariance = None
+    best_gmm = None
+    
+    for n_components in range(5, 30):
+        for covariance_type in ["full", "tied", "diag", "spherical"]:
+            gmm = GaussianMixture(n_components=n_components, covariance_type=covariance_type, random_state=42)
+            gmm_labels = gmm.fit_predict(rfm_umap_df)
+            silhouette_avg = silhouette_score(rfm_umap_df, gmm_labels)
+            
+            if silhouette_avg > best_gmm_score:
+                best_gmm_score = silhouette_avg
+                best_n_components = n_components
+                best_covariance = covariance_type
+                best_gmm = gmm
+    
+    return best_gmm, best_n_components, best_covariance, best_gmm_score
+
+# Visualization Functions
+def plot_3d_umap(rfm_umap_df, cluster_labels):
+    fig = plt.figure(figsize=(10, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    scatter = ax.scatter(rfm_umap_df["UMAP1"], rfm_umap_df["UMAP2"], rfm_umap_df["UMAP3"], 
+                         c=cluster_labels, cmap='viridis', alpha=0.7)
+    ax.set_xlabel("UMAP1")
+    ax.set_ylabel("UMAP2")
+    ax.set_zlabel("UMAP3")
+    plt.colorbar(scatter, ax=ax, label='Cluster')
+    plt.title("3D UMAP Clustering Visualization")
+    plt.show()
+
+def plot_cluster_distribution(cluster_labels):
+    plt.figure(figsize=(8, 5))
+    sns.countplot(x=cluster_labels, palette='viridis')
+    plt.xlabel("Cluster")
+    plt.ylabel("Number of Customers")
+    plt.title("Cluster Size Distribution")
+    plt.show()
+
+def plot_pairplot_umap(rfm_umap_df, cluster_labels):
+    rfm_umap_df["Cluster"] = cluster_labels
+    sns.pairplot(rfm_umap_df, hue="Cluster", palette="viridis", diag_kind="kde")
+    plt.suptitle("Pairplot of UMAP Dimensions", y=1.02)
+    plt.show()
+
+# Main Execution
+df = load_and_clean_data(file_path)
+rfm = compute_rfm(df)
+rfm_scaled = normalize_rfm(rfm)
+rfm_umap_df = apply_umap(rfm_scaled)
+
+# Optimize GMM
+best_gmm, best_n_components, best_covariance, best_gmm_score = tune_gmm(rfm_umap_df)
+gmm_labels = best_gmm.fit_predict(rfm_umap_df)
+
+# Display Results
+print(f"Best GMM Silhouette Score: {best_gmm_score}")
+print(f"Best Number of Clusters: {best_n_components}")
+print(f"Best Covariance Type: {best_covariance}")
+
+# Generate Visualizations
+plot_3d_umap(rfm_umap_df, gmm_labels)
+plot_cluster_distribution(gmm_labels)
+plot_pairplot_umap(rfm_umap_df, gmm_labels)
